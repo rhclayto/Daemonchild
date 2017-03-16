@@ -7,4 +7,4 @@ A monstrous union of ReactPHP &amp; Drupal 7, inspired by https://github.com/ber
 4. Run ```composer install``` from that location. It should install the ReactPHP stack needed for this abomination.
 5. Run the shell script with supervisord using the .ini configuration file provided.
 6. See the code & the comments in the code for what is going on.
-666. ...tse sutan sutsirhC eid eidoH
+- 666. ...tse sutan sutsirhC eid eidoH
