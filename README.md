@@ -8,4 +8,4 @@ A monstrous union of ReactPHP &amp; Drupal 7, inspired by https://github.com/ber
 5. Run the shell script with supervisord using the .ini configuration file provided.
 6. Put everything behind HAProxy.
 7. See the code & the comments in the code for what is going on.
-- 666. ...tse sutan sutsirhC eid eidoH
+-- 666. ...tse sutan sutsirhC eid eidoH
