@@ -23,12 +23,12 @@ try {
   $_SERVER['argv'] = NULL;
   $_SERVER['PHP_SELF'] = '/index.php';
   $_SERVER['SCRIPT_NAME'] = '/index.php';
-  $_SERVER['SCRIPT_FILENAME'] = '/var/www/hosting/tellingua/com/htdocs/backend/index.php';
-  $_SERVER['DOCUMENT_ROOT'] = '/var/www/hosting/tellingua/com/htdocs/backend';
-  $_SERVER['CONTEXT_DOCUMENT_ROOT'] = '/var/www/hosting/tellingua/com/htdocs/backend';
+  $_SERVER['SCRIPT_FILENAME'] = '/var/www/example/com/htdocs/backend/index.php';
+  $_SERVER['DOCUMENT_ROOT'] = '/var/www/example/com/htdocs/backend';
+  $_SERVER['CONTEXT_DOCUMENT_ROOT'] = '/var/www/example/com/htdocs/backend';
   $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
   $_SERVER['REMOTE_HOST'] = '127.0.0.1';
-  $_SERVER['SERVER_NAME'] = 'dc.tellingua.com';
+  $_SERVER['SERVER_NAME'] = 'dc.example.com';
   $_SERVER['SERVER_SOFTWARE'] = 'ReactPHP';
   $_SERVER['SERVER_PROTOCOL'] = 'HTTP/1.1';
   $_SERVER['REQUEST_METHOD'] = '';
@@ -41,7 +41,7 @@ try {
 
   // Bootstrap.
   // define('DRUPAL_ROOT', getcwd());
-  define('DRUPAL_ROOT', '/var/www/hosting/tellingua/com/htdocs/backend');
+  define('DRUPAL_ROOT', '/var/www/example/com/htdocs/backend');
   ini_set('display_errors', 0);
   include_once DRUPAL_ROOT . '/includes/bootstrap.inc';
   drupal_bootstrap(DRUPAL_BOOTSTRAP_FULL);
