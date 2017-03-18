@@ -6,5 +6,6 @@ A monstrous union of ReactPHP &amp; Drupal 7, inspired by https://github.com/ber
 3. Add files to the web root of your Drupal 7 installation.
 4. Run ```composer install``` from that location. It should install the ReactPHP stack needed for this abomination.
 5. Run the shell script with supervisord using the .ini configuration file provided.
-6. See the code & the comments in the code for what is going on.
+6. Put everything behind HAProxy.
+7. See the code & the comments in the code for what is going on.
 - 666. ...tse sutan sutsirhC eid eidoH
