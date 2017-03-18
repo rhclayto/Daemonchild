@@ -7,7 +7,6 @@ use React\Socket\Server;
 use React\Http\Request;
 use React\Http\RequestHeaderParser;
 use React\Http\Response;
-use Drupal\Component\Plugin\PluginBase;
 
 require_once './vendor/autoload.php';
 
@@ -15,8 +14,8 @@ require_once './vendor/autoload.php';
  * Bootstrap Drupal & prepare the environment & daemon.
  */
  
-// Set up $_SERVER variables that will stay the same during the daemon's lifetime.
 try {
+  // Set up $_SERVER variables that will stay the same during the daemon's lifetime.
   global $argv, $argc;
   $argc = NULL;
   $argv = NULL;
@@ -24,12 +23,12 @@ try {
   $_SERVER['argv'] = NULL;
   $_SERVER['PHP_SELF'] = '/index.php';
   $_SERVER['SCRIPT_NAME'] = '/index.php';
-  $_SERVER['SCRIPT_FILENAME'] = '/var/www/example/com/htdocs//index.php';
-  $_SERVER['DOCUMENT_ROOT'] = '/var/www/example/com/htdocs';
-  $_SERVER['CONTEXT_DOCUMENT_ROOT'] = '/var/www/example/com/htdocs';
+  $_SERVER['SCRIPT_FILENAME'] = '/var/www/hosting/tellingua/com/htdocs/backend/index.php';
+  $_SERVER['DOCUMENT_ROOT'] = '/var/www/hosting/tellingua/com/htdocs/backend';
+  $_SERVER['CONTEXT_DOCUMENT_ROOT'] = '/var/www/hosting/tellingua/com/htdocs/backend';
   $_SERVER['REMOTE_ADDR'] = '127.0.0.1';
   $_SERVER['REMOTE_HOST'] = '127.0.0.1';
-  $_SERVER['SERVER_NAME'] = 'dc.example.com';
+  $_SERVER['SERVER_NAME'] = 'dc.tellingua.com';
   $_SERVER['SERVER_SOFTWARE'] = 'ReactPHP';
   $_SERVER['SERVER_PROTOCOL'] = 'HTTP/1.1';
   $_SERVER['REQUEST_METHOD'] = '';
@@ -41,7 +40,8 @@ try {
   $_COOKIE = array();
 
   // Bootstrap.
-  define('DRUPAL_ROOT', getcwd());
+  // define('DRUPAL_ROOT', getcwd());
+  define('DRUPAL_ROOT', '/var/www/hosting/tellingua/com/htdocs/backend');
   ini_set('display_errors', 0);
   include_once DRUPAL_ROOT . '/includes/bootstrap.inc';
   drupal_bootstrap(DRUPAL_BOOTSTRAP_FULL);
@@ -63,13 +63,17 @@ try {
 
   // Set up the daemon process.
   $pid = getenv('DAEMONCHILD_PROCESS');
+  $dc_name = 'daemonchild:' . $pid;
   $port = '55' . $pid;
-  $time_to_live = time() + 43200 + mt_rand(0, 90); // 12 hours from process start, give or take.
+  // Staggering added to prevent all of the processes from restarting at the same time.
+  $time_to_live = time() + 43200 + ((int) $pid * 120); // 12 hours from process start, give or take.
   $requests_served = 0;
-  $request_limit = 100000;
-  // Using FreeBSD 10.3. Make sure 'sysctl hw.physmem' is available & the output will work with the substr() position used here.
+  $request_limit = 100000 + ((int) $pid * 500);
+  // Using FreeBSD 10.3. Make sure that 'sysctl hw.physmem' is available & that its output will work with the substr() position used here.
   $total_memory = substr(shell_exec('sysctl hw.physmem'), 12);
-  $memory_limit = (int) $total_memory / 2;
+  $memory_limit = (int) $total_memory / 5;
+  // $memory_limit = 3153958400;
+  $is_restarting = FALSE;
 
   // Miscellaneous resettable variables.
   $requestHeaders = '';
@@ -77,10 +81,10 @@ try {
   $this_source = '';
   $content = '';
   
-  watchdog('daemonchild', 'Daemonchild @pid spawning on port @prt', array('@pid' => $pid, '@prt' => $port));
+  watchdog('daemonchild', 'Daemonchild !pid spawning on port !prt', array('!pid' => $pid, '!prt' => $port));
 }
 catch (Exception $e) {
-  watchdog('daemonchild', 'Error bootstrapping Drupal: @error', array('@error' => $e->getMessage()));
+  watchdog('daemonchild', 'Error bootstrapping Drupal: !error', array('!error' => $e->getMessage()));
   return;
 }
 
@@ -90,23 +94,28 @@ catch (Exception $e) {
 
 // Create the React loop, socket, & HTTP server.
 try {
-// $loop = Factory::create();
-// Use the pecl-ev extension's loop for the best performance.
-$loop = new React\EventLoop\ExtEvLoop();
-// $loop = new React\EventLoop\StreamSelectLoop();
-// Sleep briefly before creating the socket to prevent 'port in use' errors on restart.
-sleep(0.1);
-$socket = new Server($port, $loop);
-$http = new React\Http\Server($socket);
+  // $loop = Factory::create();
+  // Use the pecl-ev extension's loop for the best performance.
+  $loop = new React\EventLoop\ExtEvLoop();
+  // $loop = new React\EventLoop\StreamSelectLoop();
+  // Sleep briefly before creating the socket to prevent 'port in use' errors on restart.
+  sleep(0.1);
+  $socket = new Server($port, $loop);
+  $http = new React\Http\Server($socket);
+  // After this daemonchild has been up & running for two seconds, tell HAProxy over the stats socket to begin routing new connections to this instance.
+  $loop->addTimer(2, function() use ($dc_name, $pid) {
+    shell_exec("echo 'enable server daemonchild/$dc_name' | /usr/local/bin/socat /var/haproxy/stats.socket stdio");
+    watchdog('daemonchild', 'Registered process !pid with HAProxy.', array('!pid' => $pid));
+  });
 }
 catch (Exception $e) {
-  watchdog('daemonchild', 'Error creating React: @error', array('@error' => $e->getMessage()));
+  watchdog('daemonchild', 'Error creating React: !error', array('!error' => $e->getMessage()));
   shell_exec('/usr/local/bin/supervisorctl restart daemonchild:' . $pid);
 }
 
 // Respond to HTTP requests.
 try {
-  $http->on('request', function (Request $request, Response $response) use (&$requests_served, $pre_user, $server_before, $pid, $time_to_live, &$requestHeaders, &$returnContent, &$this_source, $socket, &$content, $loop, $request_limit, $memory_limit) {
+  $http->on('request', function (Request $request, Response $response) use (&$requests_served, $pre_user, $server_before, $pid, $time_to_live, &$requestHeaders, &$returnContent, &$this_source, $socket, &$content, $loop, $request_limit, $memory_limit, $dc_name, $is_restarting) {
     // Restore the user to the default of 0.
     $GLOBALS['user'] = $pre_user;
     global $user;
@@ -148,16 +157,12 @@ try {
       $caps_header = 'HTTP_' . strtoupper(str_replace('-', '_', $key));
       $_SERVER[$caps_header] = $value[0];
     }
-    // @todo We may do this:
-    // drupal_block_denied(ip_address());
-    // We're behind a proxy, so we need X-Forwarded-For to work with ip_address().
-    // Or perhaps a custom solution with Redis, rolling rate limiter, etc. Or better, add blocked IPs to pf firewall rules.
-    // Or rate limit at HAProxy level.
-    
     // Call Drupal's hook_init hook functions on every request.
     module_invoke_all('init');
+    
     // Handle requests.
     // Handle POST, PATCH, etc.
+    // @todo Test with PATCH, other API endpoints, etc.
     $request->on('data', function($data) use ($request, $response, $method, &$requestHeaders, &$content) {
       $contentLength = isset($requestHeaders['Content-Length']) ? (int) $requestHeaders['Content-Length'] : 0;
       $content .= $data;
@@ -167,23 +172,17 @@ try {
         }
       }
     });
+    
     // Finish the request, send the response, tear-down the request.
-    $request->on('end', function () use ($request, $response, &$returnContent, $requestHeaders, $this_source, &$requests_served, $pre_user, $server_before, $pid, $time_to_live, $socket, $loop, $memory_limit, $request_limit) {
+    $request->on('end', function () use ($request, $response, &$returnContent, $requestHeaders, $this_source, &$requests_served, $pre_user, $server_before, $pid, $time_to_live, $socket, $loop, $memory_limit, $request_limit, $dc_name, $is_restarting) {
       // Update the count of requests served.
       $requests_served++;
       // Get the response body.
-      /* @todo // If it's a filesystem request. (Maybe handle this in HAProxy instead.)
-      if (file_exists($this_source)) {
-        $content = file_get_contents($this_source);
-      }
-      // Otherwise, it's a Drupal request.
-      else { */
       // Start output buffering.
       ob_start();
       ob_start();
-      // @todo Shorten the PHP execution path by using custom functions for this.
-      // Run the request through Drupal's menu router system.
-      menu_execute_active_handler($this_source);
+      // Run the request through a custom version of Drupal's menu router system.
+      _dc_menu_execute_active_handler($this_source);
       // Push Drupal's response into the output buffer.
       $returnContent .= ob_get_clean();
       $returnContent .= ob_get_clean();
@@ -208,12 +207,43 @@ try {
           $output_headers[ucwords($header_key, '-')] = $header_value;
         }
       }
+      if (!empty($output_headers['Vary'])) {
+        $vary_array = array_filter(array_map('trim', explode(',', $output_headers['Vary'])));
+        array_push($vary_array, 'Accept-Encoding');
+        $output_headers['Vary'] = implode(', ', $vary_array);
+      }
+      else {
+        $output_headers['Vary'] = 'Accept-Encoding';
+      }
       $status_code = $response_headers_array['status'];
+      // Compression.
+      // @todo Brotli is not currently working. It encodes fine but when transmitted to a browser all that is displayed in the body is 'Unexpected: "*"'. Fix it somehow.
+      if (!empty($requestHeaders['Accept-Encoding'])) {
+        $encodings = array_map('trim', explode(',', $requestHeaders['Accept-Encoding'][0]));
+        /* if (function_exists('brotli_compress') && in_array('br', $encodings)) {
+          $returnContent = brotli_compress($returnContent, 5, BROTLI_TEXT);
+          $output_headers['Content-Encoding'] = 'br';
+          $output_headers['Transfer-Encoding'] = 'br';
+          $output_headers['Content-Length'] = strlen($returnContent);
+        }
+        elseif (in_array('deflate', $encodings)) { */
+        if (in_array('deflate', $encodings)) {
+          $returnContent = gzcompress($returnContent);
+          $output_headers['Content-Encoding'] = 'deflate';
+          $output_headers['Content-Length'] = strlen($returnContent);
+        }
+        elseif (in_array('gzip', $encodings)) {
+          $returnContent = gzencode($returnContent);
+          $output_headers['Content-Encoding'] = 'gzip';
+          $output_headers['Content-Length'] = strlen($returnContent);
+        }
+      }
+      // Write the headers & body, & send the package.
       $response->writeHead($status_code, $output_headers);
       $response->end($returnContent);
       
       // Tear down all the request variables, headers, etc.
-      // watchdog('daemonchild', 'Tearing down process @pid', array('@pid' => $pid));
+      // watchdog('daemonchild', 'Tearing down process !pid', array('!pid' => $pid));
       $returnContent = '';
       $output_headers = [];
       unset($requestHeaders);
@@ -246,44 +276,34 @@ try {
       lock_release_all();
       _drupal_shutdown_function();
 
-      watchdog('daemonchild', 'requests_served on process @pid: @reqs', array('@pid' => $pid, '@reqs' => $requests_served));
-
-      // Auto-recycling of the daemon.
-      if ($requests_served >= $request_limit || time() >= $time_to_live) {
-        // 100 milliseconds from now, restart this process. The timer is necessary to allow the current request to finish.
-        $loop->addTimer(0.1, function() use ($pid, $socket) {
-          watchdog('daemonchild', 'Restarting daemonchild @pid.', array('@pid' => $pid));
-          // Tell MySQL to close this database connection after ten seconds.
-          db_query("set wait_timeout = 10");
-          // Close the React socket so that it stops accepting new requests while we're shutting down.
-          $socket->close();
-          // Tell supervisord to restart this process.
-          shell_exec('/usr/local/bin/supervisorctl restart daemonchild:' . $pid);
-        });
-      }
-      // @todo Error handling & logging.
+      // watchdog('daemonchild', 'requests_served on process !pid: !reqs', array('!pid' => $pid, '!reqs' => $requests_served));
     });
   });
-  $http->on('error', function (Exception $error) {
-    watchdog('daemonchild', 'Error during $http->on: @error', array('@error' => $error->getMessage()));
-    shell_exec('/usr/local/bin/supervisorctl restart daemonchild:' . $pid);
+  
+  $http->on('error', function (Exception $error) use ($pid) {
+    watchdog('daemonchild', 'Error in PID !pid during $http->on: !error', array('!pid' => $pid, '!error' => $error->getMessage()));
   });
 }
 catch (Exception $e) {
-  watchdog('daemonchild', 'Error somewhere inside $http->on: @error', array('@error' => $e->getMessage()));
+  watchdog('daemonchild', 'Error somewhere inside $http->on: !error', array('!error' => $e->getMessage()));
   shell_exec('/usr/local/bin/supervisorctl restart daemonchild:' . $pid);
 }
 
 /**
  * Periodic health checks & auto-recycling of the daemon.
  */
+ 
 try {
-  $loop->addPeriodicTimer(30, function() use (&$requests_served, $time_to_live, $pid, $socket, $loop, $request_limit, $memory_limit) {
+  $loop->addPeriodicTimer(60, function() use (&$requests_served, $time_to_live, $pid, $socket, $loop, $request_limit, $memory_limit, $dc_name, $is_restarting) {
     $current_memory_usage = memory_get_usage();
-    if ($current_memory_usage >= $memory_limit || $requests_served >= $request_limit || time() >= $time_to_live) {
-      // 100 milliseconds from now, restart this process. The timer is necessary to allow the current request to finish.
-      $loop->addTimer(0.1, function() use ($pid, $socket) {
-        watchdog('daemonchild', 'Restarting daemonchild @pid.', array('@pid' => $pid));
+    if (($current_memory_usage >= $memory_limit || $requests_served >= $request_limit || time() >= $time_to_live) && $is_restarting === FALSE) {
+      $is_restarting = TRUE;
+      // Tell HAProxy over the stats socket to stop routing new connections to this instance.
+      shell_exec("echo 'disable server daemonchild/$dc_name' | /usr/local/bin/socat /var/haproxy/stats.socket stdio");
+      watchdog('daemonchild', 'Unregistered process !pid with HAProxy.', array('!pid' => $pid));
+      // Ten seconds from now, restart this process. The timer is necessary to allow the current requests to finish & to allow HAProxy time to stop routing new requests to the process.
+      $loop->addTimer(10, function() use ($pid, $socket, $dc_name) {
+        watchdog('daemonchild', 'Restarting daemonchild !pid.', array('!pid' => $pid));
         // Tell MySQL to close this database connection after ten seconds.
         db_query("set wait_timeout = 10");
         // Close the React socket so that it stops accepting new requests while we're shutting down.
@@ -295,15 +315,154 @@ try {
   });
 }
 catch (Exception $e) {
-  watchdog('daemonchild', 'Error during $loop->addPeriodicTimer: @error', array('@error' => $e->getMessage()));
+  watchdog('daemonchild', 'Error during $loop->addPeriodicTimer: !error', array('!error' => $e->getMessage()));
   shell_exec('/usr/local/bin/supervisorctl restart daemonchild:' . $pid);
 }
 
-// Start the loop!
+
+/**
+ * Start the loop!
+ */
+
 try {
   $loop->run();
 }
 catch (Exception $e) {
-  watchdog('daemonchild', 'Error running React loop: @error', array('@error' => $e->getMessage()));
+  watchdog('daemonchild', 'Error running React loop: !error', array('!error' => $e->getMessage()));
   shell_exec('/usr/local/bin/supervisorctl restart daemonchild:' . $pid);
+}
+
+/**
+ * Utility functions.
+ */
+ 
+// Some pared down Drupal menu router functions.
+function _dc_menu_execute_active_handler($path = NULL, $deliver = TRUE) {
+  // Check if site is offline.
+  // $page_callback_result = _menu_site_is_offline() ? MENU_SITE_OFFLINE : MENU_SITE_ONLINE;
+
+  // Allow other modules to change the site status but not the path because that
+  // would not change the global variable. hook_url_inbound_alter() can be used
+  // to change the path. Code later will not use the $read_only_path variable.
+  // $read_only_path = !empty($path) ? $path : $_GET['q'];
+  // drupal_alter('menu_site_status', $page_callback_result, $read_only_path);
+
+  // Only continue if the site status is not set.
+  // if ($page_callback_result == MENU_SITE_ONLINE) {
+    if ($router_item = _dc_menu_get_item($path)) {
+      if ($router_item['access']) {
+        if ($router_item['include_file']) {
+          require_once DRUPAL_ROOT . '/' . $router_item['include_file'];
+        }
+        $page_callback_result = call_user_func_array($router_item['page_callback'], $router_item['page_arguments']);
+      }
+      else {
+        $page_callback_result = MENU_ACCESS_DENIED;
+      }
+    }
+    else {
+      $page_callback_result = MENU_NOT_FOUND;
+    }
+  // }
+
+  // Deliver the result of the page callback to the browser, or if requested,
+  // return it raw, so calling code can do more processing.
+  if ($deliver) {
+    $default_delivery_callback = (isset($router_item) && $router_item) ? $router_item['delivery_callback'] : NULL;
+    drupal_deliver_page($page_callback_result, $default_delivery_callback);
+  }
+  else {
+    return $page_callback_result;
+  }
+}
+
+function _dc_menu_get_item($path = NULL, $router_item = NULL) {
+  $router_items = &drupal_static(__FUNCTION__);
+  if (!isset($path)) {
+    $path = $_GET['q'];
+  }
+  if (isset($router_item)) {
+    $router_items[$path] = $router_item;
+  }
+  if (!isset($router_items[$path])) {
+    // Rebuild if we know it's needed, or if the menu masks are missing which
+    // occurs rarely, likely due to a race condition of multiple rebuilds.
+    if (variable_get('menu_rebuild_needed', FALSE) || !variable_get('menu_masks', array())) {
+      if (_menu_check_rebuild()) {
+        menu_rebuild();
+      }
+    }
+    $original_map = arg(NULL, $path);
+
+    $parts = array_slice($original_map, 0, MENU_MAX_PARTS);
+    $ancestors = menu_get_ancestors($parts);
+    $router_item = db_query_range('SELECT * FROM {menu_router} WHERE path IN (:ancestors) ORDER BY fit DESC', 0, 1, array(':ancestors' => $ancestors))->fetchAssoc();
+
+    if ($router_item) {
+      // Allow modules to alter the router item before it is translated and
+      // checked for access.
+      drupal_alter('menu_get_item', $router_item, $path, $original_map);
+
+      $map = _dc_menu_translate($router_item, $original_map);
+      $router_item['original_map'] = $original_map;
+      if ($map === FALSE) {
+        $router_items[$path] = FALSE;
+        return FALSE;
+      }
+      if ($router_item['access']) {
+        $router_item['map'] = $map;
+        $router_item['page_arguments'] = array_merge(menu_unserialize($router_item['page_arguments'], $map), array_slice($map, $router_item['number_parts']));
+        // $router_item['theme_arguments'] = array_merge(menu_unserialize($router_item['theme_arguments'], $map), array_slice($map, $router_item['number_parts']));
+      }
+    }
+    $router_items[$path] = $router_item;
+  }
+  return $router_items[$path];
+}
+
+function _dc_menu_translate(&$router_item, $map, $to_arg = FALSE) {
+  /* if ($to_arg && !empty($router_item['to_arg_functions'])) {
+    // Fill in missing path elements, such as the current uid.
+    _menu_link_map_translate($map, $router_item['to_arg_functions']);
+  } */
+  // The $path_map saves the pieces of the path as strings, while elements in
+  // $map may be replaced with loaded objects.
+  $path_map = $map;
+  /* if (!empty($router_item['load_functions']) && !_menu_load_objects($router_item, $map)) {
+    // An error occurred loading an object.
+    $router_item['access'] = FALSE;
+    return FALSE;
+  } */
+
+  // Generate the link path for the page request or local tasks.
+  $link_map = explode('/', $router_item['path']);
+  if (isset($router_item['tab_root'])) {
+    $tab_root_map = explode('/', $router_item['tab_root']);
+  }
+  if (isset($router_item['tab_parent'])) {
+    $tab_parent_map = explode('/', $router_item['tab_parent']);
+  }
+  for ($i = 0; $i < $router_item['number_parts']; $i++) {
+    if ($link_map[$i] == '%') {
+      $link_map[$i] = $path_map[$i];
+    }
+    if (isset($tab_root_map[$i]) && $tab_root_map[$i] == '%') {
+      $tab_root_map[$i] = $path_map[$i];
+    }
+    if (isset($tab_parent_map[$i]) && $tab_parent_map[$i] == '%') {
+      $tab_parent_map[$i] = $path_map[$i];
+    }
+  }
+  $router_item['href'] = implode('/', $link_map);
+  $router_item['tab_root_href'] = implode('/', $tab_root_map);
+  $router_item['tab_parent_href'] = implode('/', $tab_parent_map);
+  $router_item['options'] = array();
+  _menu_check_access($router_item, $map);
+
+  // For performance, don't localize an item the user can't access.
+  /* if ($router_item['access']) {
+    _menu_item_localize($router_item, $map);
+  } */
+
+  return $map;
 }
