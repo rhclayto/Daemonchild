@@ -162,19 +162,17 @@ try {
     
     // Handle requests.
     // Handle POST, PATCH, etc.
-    // @todo Test with PATCH, other API endpoints, etc.
     $request->on('data', function($data) use ($request, $response, $method, &$requestHeaders, &$content) {
       $contentLength = isset($requestHeaders['Content-Length']) ? (int) $requestHeaders['Content-Length'] : 0;
       $content .= $data;
       if (strlen($content) >= $contentLength) {
-        if ($method === 'POST') {
-          $_POST = $content;
-        }
+        // Add the content to the $_POST superglobal, so RESTful can access it. Requires a patch to RESTful: RESTful usually uses file_get_contents('php://input'), but react http or stream does something to the data so that that way doesn't work. The patch allows RESTful to get the data from $_POST. This is, it seems, an abuse of $_POST, but whatever: http://stackoverflow.com/a/8893792 .
+        $_POST = $content;
       }
     });
     
     // Finish the request, send the response, tear-down the request.
-    $request->on('end', function () use ($request, $response, &$returnContent, $requestHeaders, $this_source, &$requests_served, $pre_user, $server_before, $pid, $time_to_live, $socket, $loop, $memory_limit, $request_limit, $dc_name, $is_restarting) {
+    $request->on('end', function () use ($request, $response, &$returnContent, &$requestHeaders, $this_source, &$requests_served, $pre_user, $server_before, $pid, $time_to_live, $socket, $loop, $memory_limit, $request_limit, $dc_name, $is_restarting, &$content) {
       // Update the count of requests served.
       $requests_served++;
       // Get the response body.
@@ -182,7 +180,7 @@ try {
       ob_start();
       ob_start();
       // Run the request through a custom version of Drupal's menu router system.
-      _dc_menu_execute_active_handler($this_source);
+      menu_execute_active_handler($this_source);
       // Push Drupal's response into the output buffer.
       $returnContent .= ob_get_clean();
       $returnContent .= ob_get_clean();
@@ -246,14 +244,18 @@ try {
       // watchdog('daemonchild', 'Tearing down process !pid', array('!pid' => $pid));
       $returnContent = '';
       $output_headers = [];
+      $content = '';
+      $this_source = '';
       unset($requestHeaders);
-      // Important: Remove the RESTful response object & its headers.
+      // Remove the RESTful response object & its headers.
       $response_object = restful()->getResponse();
       $response_headers = $response_object->getHeaders();
       $response_values = $response_headers->__toArray();
       foreach ($response_values as $rKey => $rVal) {
         $response_headers->remove($rKey);
       }
+      // $request_object = restful()->getRequest();
+      // $request_object = NULL;
       $response_object = NULL;
       $response_headers = NULL;
       $response_values = NULL;
@@ -267,12 +269,12 @@ try {
       // Reset Drupal's static variables.
       drupal_static_reset();
       // Run Drupal shutdown functions.
-      _ultimate_cron_out_of_memory_protection();
+      // _ultimate_cron_out_of_memory_protection();
       ctools_shutdown_handler();
       // imageinfo_cache_file_submit_shutdown();
       // memcache_admin_shutdown();
       // UltimateCronLock:shutdown();
-      UltimateCronLockMemcache::shutdown();
+      // UltimateCronLockMemcache::shutdown();
       lock_release_all();
       _drupal_shutdown_function();
 
@@ -330,139 +332,4 @@ try {
 catch (Exception $e) {
   watchdog('daemonchild', 'Error running React loop: !error', array('!error' => $e->getMessage()));
   shell_exec('/usr/local/bin/supervisorctl restart daemonchild:' . $pid);
-}
-
-/**
- * Utility functions.
- */
- 
-// Some pared down Drupal menu router functions.
-function _dc_menu_execute_active_handler($path = NULL, $deliver = TRUE) {
-  // Check if site is offline.
-  // $page_callback_result = _menu_site_is_offline() ? MENU_SITE_OFFLINE : MENU_SITE_ONLINE;
-
-  // Allow other modules to change the site status but not the path because that
-  // would not change the global variable. hook_url_inbound_alter() can be used
-  // to change the path. Code later will not use the $read_only_path variable.
-  // $read_only_path = !empty($path) ? $path : $_GET['q'];
-  // drupal_alter('menu_site_status', $page_callback_result, $read_only_path);
-
-  // Only continue if the site status is not set.
-  // if ($page_callback_result == MENU_SITE_ONLINE) {
-    if ($router_item = _dc_menu_get_item($path)) {
-      if ($router_item['access']) {
-        if ($router_item['include_file']) {
-          require_once DRUPAL_ROOT . '/' . $router_item['include_file'];
-        }
-        $page_callback_result = call_user_func_array($router_item['page_callback'], $router_item['page_arguments']);
-      }
-      else {
-        $page_callback_result = MENU_ACCESS_DENIED;
-      }
-    }
-    else {
-      $page_callback_result = MENU_NOT_FOUND;
-    }
-  // }
-
-  // Deliver the result of the page callback to the browser, or if requested,
-  // return it raw, so calling code can do more processing.
-  if ($deliver) {
-    $default_delivery_callback = (isset($router_item) && $router_item) ? $router_item['delivery_callback'] : NULL;
-    drupal_deliver_page($page_callback_result, $default_delivery_callback);
-  }
-  else {
-    return $page_callback_result;
-  }
-}
-
-function _dc_menu_get_item($path = NULL, $router_item = NULL) {
-  $router_items = &drupal_static(__FUNCTION__);
-  if (!isset($path)) {
-    $path = $_GET['q'];
-  }
-  if (isset($router_item)) {
-    $router_items[$path] = $router_item;
-  }
-  if (!isset($router_items[$path])) {
-    // Rebuild if we know it's needed, or if the menu masks are missing which
-    // occurs rarely, likely due to a race condition of multiple rebuilds.
-    if (variable_get('menu_rebuild_needed', FALSE) || !variable_get('menu_masks', array())) {
-      if (_menu_check_rebuild()) {
-        menu_rebuild();
-      }
-    }
-    $original_map = arg(NULL, $path);
-
-    $parts = array_slice($original_map, 0, MENU_MAX_PARTS);
-    $ancestors = menu_get_ancestors($parts);
-    $router_item = db_query_range('SELECT * FROM {menu_router} WHERE path IN (:ancestors) ORDER BY fit DESC', 0, 1, array(':ancestors' => $ancestors))->fetchAssoc();
-
-    if ($router_item) {
-      // Allow modules to alter the router item before it is translated and
-      // checked for access.
-      drupal_alter('menu_get_item', $router_item, $path, $original_map);
-
-      $map = _dc_menu_translate($router_item, $original_map);
-      $router_item['original_map'] = $original_map;
-      if ($map === FALSE) {
-        $router_items[$path] = FALSE;
-        return FALSE;
-      }
-      if ($router_item['access']) {
-        $router_item['map'] = $map;
-        $router_item['page_arguments'] = array_merge(menu_unserialize($router_item['page_arguments'], $map), array_slice($map, $router_item['number_parts']));
-        // $router_item['theme_arguments'] = array_merge(menu_unserialize($router_item['theme_arguments'], $map), array_slice($map, $router_item['number_parts']));
-      }
-    }
-    $router_items[$path] = $router_item;
-  }
-  return $router_items[$path];
-}
-
-function _dc_menu_translate(&$router_item, $map, $to_arg = FALSE) {
-  /* if ($to_arg && !empty($router_item['to_arg_functions'])) {
-    // Fill in missing path elements, such as the current uid.
-    _menu_link_map_translate($map, $router_item['to_arg_functions']);
-  } */
-  // The $path_map saves the pieces of the path as strings, while elements in
-  // $map may be replaced with loaded objects.
-  $path_map = $map;
-  /* if (!empty($router_item['load_functions']) && !_menu_load_objects($router_item, $map)) {
-    // An error occurred loading an object.
-    $router_item['access'] = FALSE;
-    return FALSE;
-  } */
-
-  // Generate the link path for the page request or local tasks.
-  $link_map = explode('/', $router_item['path']);
-  if (isset($router_item['tab_root'])) {
-    $tab_root_map = explode('/', $router_item['tab_root']);
-  }
-  if (isset($router_item['tab_parent'])) {
-    $tab_parent_map = explode('/', $router_item['tab_parent']);
-  }
-  for ($i = 0; $i < $router_item['number_parts']; $i++) {
-    if ($link_map[$i] == '%') {
-      $link_map[$i] = $path_map[$i];
-    }
-    if (isset($tab_root_map[$i]) && $tab_root_map[$i] == '%') {
-      $tab_root_map[$i] = $path_map[$i];
-    }
-    if (isset($tab_parent_map[$i]) && $tab_parent_map[$i] == '%') {
-      $tab_parent_map[$i] = $path_map[$i];
-    }
-  }
-  $router_item['href'] = implode('/', $link_map);
-  $router_item['tab_root_href'] = implode('/', $tab_root_map);
-  $router_item['tab_parent_href'] = implode('/', $tab_parent_map);
-  $router_item['options'] = array();
-  _menu_check_access($router_item, $map);
-
-  // For performance, don't localize an item the user can't access.
-  /* if ($router_item['access']) {
-    _menu_item_localize($router_item, $map);
-  } */
-
-  return $map;
 }
