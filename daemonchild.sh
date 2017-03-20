@@ -110,6 +110,7 @@ try {
 }
 catch (Exception $e) {
   watchdog('daemonchild', 'Error creating React: !error', array('!error' => $e->getMessage()));
+  sleep(2);
   shell_exec('/usr/local/bin/supervisorctl restart daemonchild:' . $pid);
 }
 
@@ -173,117 +174,25 @@ try {
     
     // Finish the request, send the response, tear-down the request.
     $request->on('end', function () use ($request, $response, &$returnContent, &$requestHeaders, $this_source, &$requests_served, $pre_user, $server_before, $pid, $time_to_live, $socket, $loop, $memory_limit, $request_limit, $dc_name, $is_restarting, &$content) {
-      // Update the count of requests served.
-      $requests_served++;
-      // Get the response body.
-      // Start output buffering.
-      ob_start();
-      ob_start();
-      // Run the request through a custom version of Drupal's menu router system.
-      menu_execute_active_handler($this_source);
-      // Push Drupal's response into the output buffer.
-      $returnContent .= ob_get_clean();
-      $returnContent .= ob_get_clean();
-      // Build the React response headers & status code from the Drupal response headers & status code.
-      $output_headers = array(
-        'Expires' => 'Sun, 27 Apr 1975 05:00:00 GMT',
-        'Cache-Control' => 'no-cache, must-revalidate, public, no-transform',
-        // 'Strict-Transport-Security' => 'max-age=63072000; includeSubdomains; preload',
-        'X-Download-Options' => 'noopen',
-        'X-Robots-Tag' => 'noindex, nofollow, noarchive, nosnippet, noodp, notranslate, noimageindex',
-        'Access-Control-Max-Age' => '600',
-        // 'content-security-policy' => '"upgrade-insecure-requests',
-        'X-Frame-Options' => 'SAMEORIGIN',
-        'X-XSS-Protection' => '1; mode=block',
-        'X-Content-Type-Options' => 'nosniff',
-        // Idealisme.
-        'X-Powered-By' => 'Liberte, egalite, unite.',
-      );
-      $response_headers_array = drupal_get_http_header();
-      foreach ($response_headers_array as $header_key => $header_value) {
-        if ($header_key !== 'date') {
-          $output_headers[ucwords($header_key, '-')] = $header_value;
-        }
-      }
-      if (!empty($output_headers['Vary'])) {
-        $vary_array = array_filter(array_map('trim', explode(',', $output_headers['Vary'])));
-        array_push($vary_array, 'Accept-Encoding');
-        $output_headers['Vary'] = implode(', ', $vary_array);
-      }
-      else {
-        $output_headers['Vary'] = 'Accept-Encoding';
-      }
-      $status_code = $response_headers_array['status'];
-      // Compression.
-      // @todo Brotli is not currently working. It encodes fine but when transmitted to a browser all that is displayed in the body is 'Unexpected: "*"'. Fix it somehow.
-      if (!empty($requestHeaders['Accept-Encoding'])) {
-        $encodings = array_map('trim', explode(',', $requestHeaders['Accept-Encoding'][0]));
-        /* if (function_exists('brotli_compress') && in_array('br', $encodings)) {
-          $returnContent = brotli_compress($returnContent, 5, BROTLI_TEXT);
-          $output_headers['Content-Encoding'] = 'br';
-          $output_headers['Transfer-Encoding'] = 'br';
-          $output_headers['Content-Length'] = strlen($returnContent);
-        }
-        elseif (in_array('deflate', $encodings)) { */
-        if (in_array('deflate', $encodings)) {
-          $returnContent = gzcompress($returnContent);
-          $output_headers['Content-Encoding'] = 'deflate';
-          $output_headers['Content-Length'] = strlen($returnContent);
-        }
-        elseif (in_array('gzip', $encodings)) {
-          $returnContent = gzencode($returnContent);
-          $output_headers['Content-Encoding'] = 'gzip';
-          $output_headers['Content-Length'] = strlen($returnContent);
-        }
-      }
-      // Write the headers & body, & send the package.
-      $response->writeHead($status_code, $output_headers);
-      $response->end($returnContent);
-      
-      // Tear down all the request variables, headers, etc.
-      // watchdog('daemonchild', 'Tearing down process !pid', array('!pid' => $pid));
-      $returnContent = '';
-      $output_headers = [];
-      $content = '';
-      $this_source = '';
-      unset($requestHeaders);
-      // Remove the RESTful response object & its headers.
-      $response_object = restful()->getResponse();
-      $response_headers = $response_object->getHeaders();
-      $response_values = $response_headers->__toArray();
-      foreach ($response_values as $rKey => $rVal) {
-        $response_headers->remove($rKey);
-      }
-      // $request_object = restful()->getRequest();
-      // $request_object = NULL;
-      $response_object = NULL;
-      $response_headers = NULL;
-      $response_values = NULL;
-      $status_code = NULL;
-      // Reset the superglobals.
-      $_SERVER = $server_before;
-      $_GET = array();
-      $_POST = array();
-      $_COOKIE = array();
-      $GLOBALS['user'] = $pre_user;
-      // Reset Drupal's static variables.
-      drupal_static_reset();
-      // Run Drupal shutdown functions.
-      // _ultimate_cron_out_of_memory_protection();
-      ctools_shutdown_handler();
-      // imageinfo_cache_file_submit_shutdown();
-      // memcache_admin_shutdown();
-      // UltimateCronLock:shutdown();
-      // UltimateCronLockMemcache::shutdown();
-      lock_release_all();
-      _drupal_shutdown_function();
-
+      daemonchild_finish($request, $response, $returnContent, $requestHeaders, $this_source, $requests_served, $pre_user, $server_before, $pid, $time_to_live, $socket, $loop, $memory_limit, $request_limit, $dc_name, $is_restarting, $content);
       // watchdog('daemonchild', 'requests_served on process !pid: !reqs', array('!pid' => $pid, '!reqs' => $requests_served));
     });
   });
   
-  $http->on('error', function (Exception $error) use ($pid) {
-    watchdog('daemonchild', 'Error in PID !pid during $http->on: !error', array('!pid' => $pid, '!error' => $error->getMessage()));
+  $http->on('error', function (Exception $error) use (&$returnContent, &$requestHeaders, $this_source, &$requests_served, $pre_user, $server_before, $pid, $time_to_live, $socket, $loop, $memory_limit, $request_limit, $dc_name, $is_restarting, &$content) {
+    $error_message = $error->getMessage();
+    watchdog('daemonchild', 'Error in PID !pid during $http->on error: !error', array('!pid' => $pid, '!error' => $error_message));
+    // Recover from MongoDB connection errors.
+    if (strpos($error_message, 'ailed to send') !== FALSE || strpos($error_message, 'o suitable servers') !== FALSE || strpos($error_message, 'onnection closed') !== FALSE) {
+      // Re-establish the MongoDB connection.
+      mongodb();
+      // @todo Trying to do a retry of the request that triggered the error, but it's not working. $request & $response objects don't seem to be available in this listener. For now, handle retries on the client side when receiving a 400 error (which is what react/http sends on error events).
+      // shell_exec('/usr/local/bin/supervisorctl restart daemonchild:' . $pid);
+      // sleep(2);
+      // daemonchild_finish($request, $response, $returnContent, $requestHeaders, $this_source, $requests_served, $pre_user, $server_before, $pid, $time_to_live, $socket, $loop, $memory_limit, $request_limit, $dc_name, $is_restarting, $content);
+    }
+    // Tear down all the request variables, headers, etc.
+    daemonchild_teardown($pid, $requestHeaders, $output_headers, $content, $this_source, $returnContent, $server_before, $pre_user, $status_code);
   });
 }
 catch (Exception $e) {
@@ -332,4 +241,117 @@ try {
 catch (Exception $e) {
   watchdog('daemonchild', 'Error running React loop: !error', array('!error' => $e->getMessage()));
   shell_exec('/usr/local/bin/supervisorctl restart daemonchild:' . $pid);
+}
+
+/**
+ * Functions.
+ */
+
+function daemonchild_finish($request, $response, &$returnContent, &$requestHeaders, $this_source, &$requests_served, $pre_user, $server_before, $pid, $time_to_live, $socket, $loop, $memory_limit, $request_limit, $dc_name, $is_restarting, &$content) {
+  // Update the count of requests served.
+  $requests_served++;
+  // Get the response body.
+  // Start output buffering.
+  ob_start();
+  ob_start();
+  // Run the request through a custom version of Drupal's menu router system.
+  menu_execute_active_handler($this_source);
+  // Push Drupal's response into the output buffer.
+  $returnContent .= ob_get_clean();
+  $returnContent .= ob_get_clean();
+  // Build the React response headers & status code from the Drupal response headers & status code.
+  $output_headers = array(
+    'Expires' => 'Sun, 27 Apr 1975 05:00:00 GMT',
+    'Cache-Control' => 'no-cache, must-revalidate, public, no-transform',
+    // 'Strict-Transport-Security' => 'max-age=63072000; includeSubdomains; preload',
+    'X-Download-Options' => 'noopen',
+    'X-Robots-Tag' => 'noindex, nofollow, noarchive, nosnippet, noodp, notranslate, noimageindex',
+    'Access-Control-Max-Age' => '600',
+    // 'content-security-policy' => '"upgrade-insecure-requests',
+    'X-Frame-Options' => 'SAMEORIGIN',
+    'X-XSS-Protection' => '1; mode=block',
+    'X-Content-Type-Options' => 'nosniff',
+    // Idealisme.
+    'X-Powered-By' => 'Liberte, egalite, unite.',
+  );
+  $response_headers_array = drupal_get_http_header();
+  foreach ($response_headers_array as $header_key => $header_value) {
+    if ($header_key !== 'date') {
+      $output_headers[ucwords($header_key, '-')] = $header_value;
+    }
+  }
+  if (!empty($output_headers['Vary'])) {
+    $vary_array = array_filter(array_map('trim', explode(',', $output_headers['Vary'])));
+    array_push($vary_array, 'Accept-Encoding');
+    $output_headers['Vary'] = implode(', ', $vary_array);
+  }
+  else {
+    $output_headers['Vary'] = 'Accept-Encoding';
+  }
+  $status_code = $response_headers_array['status'];
+  // Compression.
+  // @todo Brotli is not currently working. It encodes fine but when transmitted to a browser all that is displayed in the body is 'Unexpected: "*"'. Fix it somehow.
+  if (!empty($requestHeaders['Accept-Encoding'])) {
+    $encodings = array_map('trim', explode(',', $requestHeaders['Accept-Encoding'][0]));
+    /* if (function_exists('brotli_compress') && in_array('br', $encodings)) {
+      $returnContent = brotli_compress($returnContent, 5, BROTLI_TEXT);
+      $output_headers['Content-Encoding'] = 'br';
+      $output_headers['Transfer-Encoding'] = 'br';
+      $output_headers['Content-Length'] = strlen($returnContent);
+    }
+    elseif (in_array('deflate', $encodings)) { */
+    if (in_array('deflate', $encodings)) {
+      $returnContent = gzcompress($returnContent);
+      $output_headers['Content-Encoding'] = 'deflate';
+      $output_headers['Content-Length'] = strlen($returnContent);
+    }
+    elseif (in_array('gzip', $encodings)) {
+      $returnContent = gzencode($returnContent);
+      $output_headers['Content-Encoding'] = 'gzip';
+      $output_headers['Content-Length'] = strlen($returnContent);
+    }
+  }
+  // Write the headers & body, & send the package.
+  $response->writeHead($status_code, $output_headers);
+  $response->end($returnContent);
+  
+  // Tear down all the request variables, headers, etc.
+  daemonchild_teardown($pid, $requestHeaders, $output_headers, $content, $this_source, $returnContent, $server_before, $pre_user, $status_code);
+}
+
+function daemonchild_teardown($pid, &$requestHeaders, &$output_headers, &$content, &$this_source, &$returnContent, $server_before, $pre_user, &$status_code) {
+  // Tear down all the request variables, headers, etc.
+  // watchdog('daemonchild', 'Tearing down process !pid', array('!pid' => $pid));
+  $returnContent = '';
+  $output_headers = [];
+  $content = '';
+  $this_source = '';
+  unset($requestHeaders);
+  // Remove the RESTful response object & its headers.
+  $response_object = restful()->getResponse();
+  $response_headers = $response_object->getHeaders();
+  $response_values = $response_headers->__toArray();
+  foreach ($response_values as $rKey => $rVal) {
+    $response_headers->remove($rKey);
+  }
+  // $request_object = restful()->getRequest();
+  // $request_object = NULL;
+  $response_object = NULL;
+  $response_headers = NULL;
+  $response_values = NULL;
+  $status_code = NULL;
+  // Reset the superglobals.
+  $_SERVER = $server_before;
+  $_GET = array();
+  $_POST = array();
+  $_COOKIE = array();
+  $GLOBALS['user'] = $pre_user;
+  // Reset Drupal's static variables.
+  drupal_static_reset();
+  // Run Drupal shutdown functions.
+  ctools_shutdown_handler();
+  // imageinfo_cache_file_submit_shutdown();
+  // memcache_admin_shutdown();
+  lock_release_all();
+  _drupal_shutdown_function();
 }
